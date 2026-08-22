@@ -1,0 +1,54 @@
+name: Dependency advisories
+description: >-
+  Report dependency advisories against the merge base, so a change is judged on
+  what it introduces rather than on what the branch already carried.
+
+inputs:
+  base-ref:
+    description: >-
+      Commit to treat as the baseline. Defaults to the merge base with the pull
+      request's target branch. Without one, nothing is attributed and nothing blocks.
+    required: false
+    default: ""
+  ignore-file:
+    description: Path to the advisory ignore list.
+    required: false
+    default: .github/advisories.json
+  bun-version:
+    description: Bun version used to run the scanner and to audit JavaScript projects.
+    required: false
+    default: latest
+
+outputs:
+  introduced:
+    description: Advisories present at HEAD but not at the baseline.
+    value: ${{ steps.scan.outputs.introduced }}
+  total:
+    description: All advisories at HEAD, after the ignore list is applied.
+    value: ${{ steps.scan.outputs.total }}
+  blocking:
+    description: Advisories severe enough to fail, given each ecosystem's tier.
+    value: ${{ steps.scan.outputs.blocking }}
+
+runs:
+  using: composite
+  steps:
+    - uses: oven-sh/setup-bun@v2
+      with:
+        bun-version: ${{ inputs.bun-version }}
+
+    # The baseline is scanned in a detached worktree, which needs real history.
+    - name: Verify history depth
+      shell: bash
+      run: |
+        if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
+          echo "::warning::shallow clone; advisories cannot be attributed to this change. Use actions/checkout with fetch-depth: 0."
+        fi
+
+    - name: Scan
+      id: scan
+      shell: bash
+      env:
+        ADVISORY_BASE_REF: ${{ inputs.base-ref }}
+        ADVISORY_IGNORE_FILE: ${{ inputs.ignore-file }}
+      run: bun "${{ github.action_path }}/src/scan.ts"

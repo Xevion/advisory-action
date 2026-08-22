@@ -1,0 +1,86 @@
+# advisory-action
+
+Reports dependency advisories against the merge base, so a change is judged on
+what it introduces rather than on what the branch already carried.
+
+## Why
+
+A dependency audit is a function of your lockfile *and* the wall-clock date. The
+advisory database moves daily; your lockfile does not. So an audit run as a
+merge gate fails commits that changed nothing, and every branch inherits
+whatever the base branch was already carrying. Red stops meaning anything.
+
+This action separates the two questions. *What does this change introduce?* is
+answered by scanning the merge base in a detached worktree and diffing the
+advisory sets. *What is this repository carrying?* is reported alongside, as
+warnings, without failing anything.
+
+## Tiers
+
+What may block depends on how much the ecosystem's scanner can actually prove:
+
+| Ecosystem | Scanner | Tier | Blocks on |
+| --- | --- | --- | --- |
+| Go | `govulncheck` | `blocking` | anything introduced |
+| Rust | `cargo-deny` | `vulnerability-only` | introduced vulnerabilities with a fix |
+| JavaScript | `bun audit --prod` | `report-only` | nothing |
+
+Go earns a gate because govulncheck resolves vulnerable *symbols* against a call
+graph and discards what your code cannot reach. Rust has no reachability
+analysis, but cargo-deny does separate real vulnerabilities from `unsound`,
+`unmaintained` and `yanked`, so the vulnerability class alone is worth gating.
+JavaScript has neither: `bun audit --prod` filters to the production dependency
+graph, which is a large improvement over nothing and still not a claim about
+reachability. So it reports.
+
+Only JavaScript is implemented today.
+
+## Usage
+
+```yaml
+- uses: actions/checkout@v4
+  with:
+    fetch-depth: 0 # the baseline is scanned from a worktree
+- uses: Xevion/advisory-action@master
+```
+
+Without full history there is no baseline, and the action reports everything as
+pre-existing and blocks nothing. That is deliberate: an unknown baseline is a
+reason to under-report, never to fail a change that cannot be attributed.
+
+### Inputs
+
+| Input | Default | Meaning |
+| --- | --- | --- |
+| `base-ref` | merge base with the PR target | Commit treated as the baseline |
+| `ignore-file` | `.github/advisories.json` | Advisory suppression list |
+| `bun-version` | `latest` | Bun used to run the scanner and audit JS |
+
+### Outputs
+
+`introduced`, `total`, and `blocking` counts, for a summary job to consume.
+
+## Ignore file
+
+```json
+[
+  {
+    "id": "GHSA-xxxx-xxxx-xxxx",
+    "reason": "transitive via layerchart; no patched release exists",
+    "expires": "2026-12-01"
+  }
+]
+```
+
+`reason` is required and the action fails without one. `expires` is optional;
+past that date the entry stops suppressing and is reported as stale, so the list
+cannot quietly rot.
+
+## Known limits
+
+- `bun audit --prod` does not apply the production filter at a workspace root,
+  so the scanner audits each workspace package separately instead. Fixed in Bun
+  1.4; the workaround is harmless once that lands.
+- Production reachability is a dependency-graph property, not a runtime one.
+  Build tooling reached through a peer dependency (`vite`, `rollup`, `esbuild`)
+  still surfaces on framework projects even though it never ships.
