@@ -1,10 +1,13 @@
 import { mkdtempSync, rmSync, appendFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { scanGo } from "./go.ts";
 import { scanJs } from "./js.ts";
-import { loadIgnores, isIgnored, type IgnoreSet } from "./ignore.ts";
+import { scanRust } from "./rust.ts";
+import { compare, type Verdict } from "./diff.ts";
+import { discover } from "./discover.ts";
+import { loadIgnores, type IgnoreSet } from "./ignore.ts";
 import {
-  key,
   SEVERITY_ORDER,
   TIERS,
   type Advisory,
@@ -12,7 +15,15 @@ import {
   type ScanResult,
 } from "./types.ts";
 
-const SCANNERS = [scanJs];
+const SCANNERS: {
+  ecosystem: Ecosystem;
+  markers: string[];
+  scan: (dir: string) => Promise<ScanResult | null>;
+}[] = [
+  { ecosystem: "js", markers: ["bun.lock", "bun.lockb"], scan: scanJs },
+  { ecosystem: "rust", markers: ["Cargo.lock"], scan: scanRust },
+  { ecosystem: "go", markers: ["go.mod"], scan: scanGo },
+];
 
 async function git(args: string[], cwd = "."): Promise<string> {
   const p = Bun.spawn(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
@@ -24,16 +35,36 @@ async function git(args: string[], cwd = "."): Promise<string> {
 }
 
 async function scanTree(dir: string): Promise<ScanResult[]> {
-  const results: ScanResult[] = [];
-  for (const scanner of SCANNERS) {
-    try {
-      const r = await scanner(dir);
-      if (r) results.push(r);
-    } catch (e) {
-      results.push({ ecosystem: "js", advisories: [], error: String(e) });
+  // govulncheck builds a call graph and cargo-audit resolves a lockfile, so the
+  // slowest scanner sets the wall clock rather than the sum of all of them.
+  const jobs = SCANNERS.flatMap(({ ecosystem, markers, scan }) =>
+    discover(dir, markers).map(async (root): Promise<ScanResult> => {
+      try {
+        return (await scan(root)) ?? { ecosystem, advisories: [] };
+      } catch (e) {
+        return { ecosystem, advisories: [], error: String(e) };
+      }
+    }),
+  );
+
+  const settled = await Promise.all(jobs);
+
+  // One result per ecosystem, so a repository with a frontend beside a backend
+  // reads as two sections rather than four.
+  const merged = new Map<Ecosystem, ScanResult>();
+  for (const r of settled) {
+    const prev = merged.get(r.ecosystem);
+    if (!prev) merged.set(r.ecosystem, { ...r });
+    else {
+      prev.advisories.push(...r.advisories);
+      prev.error ??= r.error;
     }
   }
-  return results;
+  for (const r of merged.values()) {
+    const seen = new Map(r.advisories.map((a) => [`${a.id}:${a.package}`, a]));
+    r.advisories = [...seen.values()];
+  }
+  return [...merged.values()];
 }
 
 /** Scan a historical commit in a detached worktree, leaving the checkout untouched. */
@@ -53,75 +84,6 @@ async function scanBase(sha: string): Promise<ScanResult[] | null> {
   }
 }
 
-interface Verdict {
-  ecosystem: Ecosystem;
-  introduced: Advisory[];
-  inherited: Advisory[];
-  suppressed: Advisory[];
-  blocking: Advisory[];
-  baselineKnown: boolean;
-  error?: string;
-}
-
-/**
- * Which advisories are severe enough to fail the run, given the ecosystem's tier.
- *
- * Only ever drawn from `introduced`: an advisory the base branch already carries
- * is not this change's doing, and failing on it makes every unrelated PR red.
- */
-function selectBlocking(eco: Ecosystem, introduced: Advisory[]): Advisory[] {
-  switch (TIERS[eco]) {
-    case "blocking":
-      return introduced;
-    case "vulnerability-only":
-      return introduced.filter(
-        (a) => a.klass === "vulnerability" && a.fixAvailable !== false,
-      );
-    case "report-only":
-      return [];
-  }
-}
-
-function compare(
-  head: ScanResult[],
-  base: ScanResult[] | null,
-  ignores: IgnoreSet,
-): Verdict[] {
-  return head.map((h) => {
-    const kept = h.advisories.filter((a) => !isIgnored(a, ignores));
-    const suppressed = h.advisories.filter((a) => isIgnored(a, ignores));
-
-    if (!base) {
-      // No baseline: attribute nothing, block nothing. A missing base is a
-      // reason to under-report, never to fail a change we cannot attribute.
-      return {
-        ecosystem: h.ecosystem,
-        introduced: [],
-        inherited: kept,
-        suppressed,
-        blocking: [],
-        baselineKnown: false,
-        error: h.error,
-      };
-    }
-
-    const baseKeys = new Set(
-      (base.find((b) => b.ecosystem === h.ecosystem)?.advisories ?? []).map(key),
-    );
-    const introduced = kept.filter((a) => !baseKeys.has(key(a)));
-    const inherited = kept.filter((a) => baseKeys.has(key(a)));
-    return {
-      ecosystem: h.ecosystem,
-      introduced,
-      inherited,
-      suppressed,
-      blocking: selectBlocking(h.ecosystem, introduced),
-      baselineKnown: true,
-      error: h.error,
-    };
-  });
-}
-
 function bySeverity(list: Advisory[]): string {
   const counts = SEVERITY_ORDER.map(
     (s) => [s, list.filter((a) => a.severity === s).length] as const,
@@ -130,7 +92,17 @@ function bySeverity(list: Advisory[]): string {
 }
 
 function renderRow(a: Advisory): string {
-  return `| \`${a.id}\` | ${a.package} | ${a.severity} | ${a.title.slice(0, 110)} |`;
+  const fix = a.fixAvailable === null ? "?" : a.fixAvailable ? "yes" : "no";
+  return `| \`${a.id}\` | ${a.package} | ${a.klass} | ${a.severity} | ${fix} | ${a.title.slice(0, 90)} |`;
+}
+
+/** Class counts, which is what decides whether a Rust finding can block at all. */
+function byClass(list: Advisory[]): string {
+  const counts = new Map<string, number>();
+  for (const a of list) counts.set(a.klass, (counts.get(a.klass) ?? 0) + 1);
+  return counts.size
+    ? [...counts].map(([k, n]) => `${n} ${k}`).join(", ")
+    : "none";
 }
 
 function summarize(verdicts: Verdict[], ignores: IgnoreSet): string {
@@ -147,14 +119,15 @@ function summarize(verdicts: Verdict[], ignores: IgnoreSet): string {
       "",
       `- introduced by this change: **${v.introduced.length}** (${bySeverity(v.introduced)})`,
       `- pre-existing on the base branch: ${v.inherited.length} (${bySeverity(v.inherited)})`,
+      `- by class: ${byClass([...v.introduced, ...v.inherited])}`,
       `- suppressed by ignore file: ${v.suppressed.length}`,
       v.baselineKnown ? "" : "- baseline unavailable, so nothing is attributed to this change",
     );
     if (v.introduced.length > 0) {
       lines.push(
         "",
-        "| Advisory | Package | Severity | Title |",
-        "| --- | --- | --- | --- |",
+        "| Advisory | Package | Class | Severity | Fix | Title |",
+        "| --- | --- | --- | --- | --- | --- |",
         ...v.introduced.map(renderRow),
       );
     }

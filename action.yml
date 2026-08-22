@@ -18,6 +18,10 @@ inputs:
     description: Bun version used to run the scanner and to audit JavaScript projects.
     required: false
     default: latest
+  govulncheck-version:
+    description: govulncheck version installed when a Go module is present.
+    required: false
+    default: latest
 
 outputs:
   introduced:
@@ -44,6 +48,30 @@ runs:
         if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
           echo "::warning::shallow clone; advisories cannot be attributed to this change. Use actions/checkout with fetch-depth: 0."
         fi
+
+    # Each scanner is only worth installing where its ecosystem exists, and the
+    # language toolchain itself is the caller's to set up.
+    - name: Detect ecosystems
+      id: detect
+      shell: bash
+      run: |
+        { [ -f go.mod ] && echo "go=true" || echo "go=false"; } >> "$GITHUB_OUTPUT"
+        { [ -f Cargo.lock ] && echo "rust=true" || echo "rust=false"; } >> "$GITHUB_OUTPUT"
+
+    - name: Install govulncheck
+      if: steps.detect.outputs.go == 'true'
+      shell: bash
+      run: |
+        if ! command -v go >/dev/null; then
+          echo "::error::go.mod is present but the Go toolchain is not. Add actions/setup-go before this action."
+          exit 1
+        fi
+        go install "golang.org/x/vuln/cmd/govulncheck@${{ inputs.govulncheck-version }}"
+        echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+    - name: Install cargo-audit
+      if: steps.detect.outputs.rust == 'true'
+      uses: taiki-e/install-action@cargo-audit
 
     - name: Scan
       id: scan

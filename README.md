@@ -33,8 +33,6 @@ JavaScript has neither: `bun audit --prod` filters to the production dependency
 graph, which is a large improvement over nothing and still not a claim about
 reachability. So it reports.
 
-Only JavaScript is implemented today.
-
 ## Usage
 
 ```yaml
@@ -43,6 +41,16 @@ Only JavaScript is implemented today.
     fetch-depth: 0 # the baseline is scanned from a worktree
 - uses: Xevion/advisory-action@master
 ```
+
+Ecosystems are detected by looking for `bun.lock`, `Cargo.lock` and `go.mod` up
+to two directories deep, so a repository with a frontend under `web/` beside a
+root `go.mod` is scanned as both. Results are merged per ecosystem.
+
+The action installs `govulncheck` and `cargo-audit` when it finds an ecosystem
+that needs them, but the language toolchain itself is yours to set up: run
+`actions/setup-go` before this action in a Go repository, and make sure a Rust
+toolchain is on PATH in a Cargo one. A Go module with no Go toolchain is an
+error rather than a silent skip.
 
 Without full history there is no baseline, and the action reports everything as
 pre-existing and blocks nothing. That is deliberate: an unknown baseline is a
@@ -84,3 +92,8 @@ cannot quietly rot.
 - Production reachability is a dependency-graph property, not a runtime one.
   Build tooling reached through a peer dependency (`vite`, `rollup`, `esbuild`)
   still surfaces on framework projects even though it never ships.
+- Go advisories carry no CVSS, so they are reported with unknown severity.
+  govulncheck ranks by reachability instead, which is the stronger signal.
+- Only advisories govulncheck traces to a called symbol are reported. Modules
+  merely required and packages merely imported are dropped, matching what
+  govulncheck's own summary sets aside.
