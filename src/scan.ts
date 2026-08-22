@@ -225,4 +225,13 @@ async function main() {
   process.exit(blocking.length > 0 ? 1 : 0);
 }
 
-await main();
+try {
+  await main();
+} catch (e) {
+  // A malformed ignore file or an unusable repository is a configuration fault,
+  // not an advisory. Say so plainly rather than dumping a stack trace into CI.
+  console.log(
+    `::error title=Advisory scan failed::${e instanceof Error ? e.message : String(e)}`,
+  );
+  process.exit(1);
+}
