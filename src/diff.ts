@@ -5,6 +5,7 @@ export interface Verdict {
   ecosystem: Ecosystem;
   introduced: Advisory[];
   inherited: Advisory[];
+  resolved: Advisory[];
   suppressed: Advisory[];
   blocking: Advisory[];
   baselineKnown: boolean;
@@ -46,6 +47,7 @@ export function compare(
         ecosystem: h.ecosystem,
         introduced: [],
         inherited: kept,
+        resolved: [],
         suppressed,
         blocking: [],
         baselineKnown: false,
@@ -53,15 +55,22 @@ export function compare(
       };
     }
 
-    const baseKeys = new Set(
-      (base.find((b) => b.ecosystem === h.ecosystem)?.advisories ?? []).map(key),
-    );
+    const baseAdvisories =
+      base.find((b) => b.ecosystem === h.ecosystem)?.advisories ?? [];
+    const baseKeys = new Set(baseAdvisories.map(key));
+    const headKeys = new Set(kept.map(key));
     const introduced = kept.filter((a) => !baseKeys.has(key(a)));
     const inherited = kept.filter((a) => baseKeys.has(key(a)));
+    // Credit for advisories a change clears. Without it a security bump reads
+    // exactly like an unrelated one, which is what made them unevaluable.
+    const resolved = baseAdvisories.filter(
+      (a) => !headKeys.has(key(a)) && !isIgnored(a, ignores),
+    );
     return {
       ecosystem: h.ecosystem,
       introduced,
       inherited,
+      resolved,
       suppressed,
       blocking: selectBlocking(h.ecosystem, introduced),
       baselineKnown: true,

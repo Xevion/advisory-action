@@ -27,6 +27,9 @@ outputs:
   introduced:
     description: Advisories present at HEAD but not at the baseline.
     value: ${{ steps.scan.outputs.introduced }}
+  resolved:
+    description: Advisories present at the baseline but gone at HEAD.
+    value: ${{ steps.scan.outputs.resolved }}
   total:
     description: All advisories at HEAD, after the ignore list is applied.
     value: ${{ steps.scan.outputs.total }}
@@ -54,9 +57,7 @@ runs:
     - name: Detect ecosystems
       id: detect
       shell: bash
-      run: |
-        { [ -f go.mod ] && echo "go=true" || echo "go=false"; } >> "$GITHUB_OUTPUT"
-        { [ -f Cargo.lock ] && echo "rust=true" || echo "rust=false"; } >> "$GITHUB_OUTPUT"
+      run: bun "${{ github.action_path }}/src/detect.ts"
 
     - name: Install govulncheck
       if: steps.detect.outputs.go == 'true'

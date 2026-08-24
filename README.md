@@ -22,12 +22,12 @@ What may block depends on how much the ecosystem's scanner can actually prove:
 | Ecosystem | Scanner | Tier | Blocks on |
 | --- | --- | --- | --- |
 | Go | `govulncheck` | `blocking` | anything introduced |
-| Rust | `cargo-deny` | `vulnerability-only` | introduced vulnerabilities with a fix |
+| Rust | `cargo-audit` | `vulnerability-only` | introduced vulnerabilities with a fix |
 | JavaScript | `bun audit --prod` | `report-only` | nothing |
 
 Go earns a gate because govulncheck resolves vulnerable *symbols* against a call
 graph and discards what your code cannot reach. Rust has no reachability
-analysis, but cargo-deny does separate real vulnerabilities from `unsound`,
+analysis, but cargo-audit does separate real vulnerabilities from `unsound`,
 `unmaintained` and `yanked`, so the vulnerability class alone is worth gating.
 JavaScript has neither: `bun audit --prod` filters to the production dependency
 graph, which is a large improvement over nothing and still not a claim about
@@ -39,8 +39,12 @@ reachability. So it reports.
 - uses: actions/checkout@v4
   with:
     fetch-depth: 0 # the baseline is scanned from a worktree
-- uses: Xevion/advisory-action@master
+- uses: Xevion/advisory-action@v1
 ```
+
+`@v1` is a moving tag on the latest compatible release. Pin it rather than
+`@master`, so a change here reaches your repositories when you move the tag
+instead of the moment it is pushed.
 
 Ecosystems are detected by looking for `bun.lock`, `Cargo.lock` and `go.mod` up
 to two directories deep, so a repository with a frontend under `web/` beside a
@@ -63,10 +67,20 @@ reason to under-report, never to fail a change that cannot be attributed.
 | `base-ref` | merge base with the PR target | Commit treated as the baseline |
 | `ignore-file` | `.github/advisories.json` | Advisory suppression list |
 | `bun-version` | `latest` | Bun used to run the scanner and audit JS |
+| `govulncheck-version` | `latest` | govulncheck installed when a Go module is present |
 
 ### Outputs
 
-`introduced`, `total`, and `blocking` counts, for a summary job to consume.
+| Output | Meaning |
+| --- | --- |
+| `introduced` | Present at HEAD, absent at the baseline |
+| `resolved` | Present at the baseline, gone at HEAD |
+| `total` | Everything at HEAD, after the ignore list |
+| `blocking` | Severe enough to fail, given each ecosystem's tier |
+
+`resolved` is what makes a security bump legible. Without it a PR that clears
+four advisories reports identically to one that clears none, which is most of
+why dependency PRs became unreadable in the first place.
 
 ## Ignore file
 
@@ -92,8 +106,11 @@ cannot quietly rot.
 - Production reachability is a dependency-graph property, not a runtime one.
   Build tooling reached through a peer dependency (`vite`, `rollup`, `esbuild`)
   still surfaces on framework projects even though it never ships.
-- Go advisories carry no CVSS, so they are reported with unknown severity.
-  govulncheck ranks by reachability instead, which is the stronger signal.
+- Go advisories carry no CVSS, and cargo-audit publishes one on only some
+  advisories and none at all for `unmaintained` or `yanked`. Where a section
+  cannot rank, the severity breakdown is omitted rather than filled with
+  "unknown", and class is reported instead. govulncheck ranks by reachability,
+  which is the stronger signal anyway.
 - Only advisories govulncheck traces to a called symbol are reported. Modules
   merely required and packages merely imported are dropped, matching what
   govulncheck's own summary sets aside.

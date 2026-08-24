@@ -89,3 +89,29 @@ describe("compare", () => {
     expect(v!.blocking).toHaveLength(1);
   });
 });
+
+describe("resolved", () => {
+  test("credits advisories the change clears without counting them as introduced", () => {
+    const base = [result("js", [adv("js", "GHSA-1"), adv("js", "GHSA-2")])];
+    const head = [result("js", [adv("js", "GHSA-2")])];
+    const [v] = compare(head, base, noIgnores);
+    expect(v.resolved.map((a) => a.id)).toEqual(["GHSA-1"]);
+    expect(v.introduced).toHaveLength(0);
+    expect(v.inherited.map((a) => a.id)).toEqual(["GHSA-2"]);
+  });
+
+  test("a change can resolve and introduce at once", () => {
+    const base = [result("go", [adv("go", "GO-1")])];
+    const head = [result("go", [adv("go", "GO-2")])];
+    const [v] = compare(head, base, noIgnores);
+    expect(v.resolved.map((a) => a.id)).toEqual(["GO-1"]);
+    expect(v.blocking.map((a) => a.id)).toEqual(["GO-2"]);
+  });
+
+  test("nothing is resolved without a baseline to compare against", () => {
+    const head = [result("js", [adv("js", "GHSA-1")])];
+    const [v] = compare(head, null, noIgnores);
+    expect(v.resolved).toHaveLength(0);
+    expect(v.baselineKnown).toBe(false);
+  });
+});

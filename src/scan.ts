@@ -84,11 +84,26 @@ async function scanBase(sha: string): Promise<ScanResult[] | null> {
   }
 }
 
-function bySeverity(list: Advisory[]): string {
+/**
+ * Severity counts, or nothing when the scanner does not rank.
+ *
+ * cargo-audit publishes a CVSS vector on only some advisories and none at all
+ * for the unmaintained and yanked classes, so a Rust section would otherwise
+ * read "35 (35 unknown)". Where severity says nothing, class is the real axis.
+ */
+function bySeverity(list: Advisory[]): string | null {
   const counts = SEVERITY_ORDER.map(
     (s) => [s, list.filter((a) => a.severity === s).length] as const,
   ).filter(([, n]) => n > 0);
-  return counts.length ? counts.map(([s, n]) => `${n} ${s}`).join(", ") : "none";
+  if (!counts.length) return null;
+  if (counts.every(([s]) => s === "unknown")) return null;
+  return counts.map(([s, n]) => `${n} ${s}`).join(", ");
+}
+
+/** `12 (3 high, 9 moderate)`, or a bare count where severity is unavailable. */
+function countWithSeverity(list: Advisory[]): string {
+  const severity = bySeverity(list);
+  return severity ? `${list.length} (${severity})` : `${list.length}`;
 }
 
 function renderRow(a: Advisory): string {
@@ -117,8 +132,11 @@ function summarize(verdicts: Verdict[], ignores: IgnoreSet): string {
     }
     lines.push(
       "",
-      `- introduced by this change: **${v.introduced.length}** (${bySeverity(v.introduced)})`,
-      `- pre-existing on the base branch: ${v.inherited.length} (${bySeverity(v.inherited)})`,
+      `- introduced by this change: **${countWithSeverity(v.introduced)}**`,
+      ...(v.resolved.length > 0
+        ? [`- resolved by this change: **${countWithSeverity(v.resolved)}**`]
+        : []),
+      `- pre-existing on the base branch: ${countWithSeverity(v.inherited)}`,
       `- by class: ${byClass([...v.introduced, ...v.inherited])}`,
       `- suppressed by ignore file: ${v.suppressed.length}`,
       v.baselineKnown ? "" : "- baseline unavailable, so nothing is attributed to this change",
@@ -129,6 +147,16 @@ function summarize(verdicts: Verdict[], ignores: IgnoreSet): string {
         "| Advisory | Package | Class | Severity | Fix | Title |",
         "| --- | --- | --- | --- | --- | --- |",
         ...v.introduced.map(renderRow),
+      );
+    }
+    if (v.resolved.length > 0) {
+      lines.push(
+        "",
+        "<details><summary>Resolved</summary>",
+        "",
+        ...v.resolved.map((a) => `- \`${a.id}\` ${a.package}: ${a.title.slice(0, 90)}`),
+        "",
+        "</details>",
       );
     }
     lines.push("");
@@ -191,6 +219,7 @@ async function main() {
     appendFileSync(
       process.env.GITHUB_OUTPUT,
       `introduced=${verdicts.reduce((n, v) => n + v.introduced.length, 0)}\n` +
+        `resolved=${verdicts.reduce((n, v) => n + v.resolved.length, 0)}\n` +
         `total=${totals}\nblocking=${blocking.length}\n`,
     );
   }
