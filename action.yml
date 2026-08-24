@@ -74,15 +74,32 @@ runs:
       if: steps.detect.outputs.rust == 'true'
       uses: taiki-e/install-action@cargo-audit
 
-    # npm ships with the runner; pnpm and Yarn Berry do not.
+    # npm ships with the runner; pnpm and Yarn do not. corepack honours a
+    # packageManager pin where the repository sets one, and not every one does,
+    # so fall back to a plain install rather than failing on a missing pin.
     - name: Install pnpm
       if: steps.detect.outputs.pnpm == 'true'
-      uses: pnpm/action-setup@v4
+      shell: bash
+      env:
+        COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+      run: |
+        corepack enable pnpm || true
+        if ! pnpm --version; then
+          npm install -g pnpm
+          pnpm --version
+        fi
 
-    - name: Enable Yarn
+    - name: Install Yarn
       if: steps.detect.outputs.yarn == 'true'
       shell: bash
-      run: corepack enable
+      env:
+        COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+      run: |
+        corepack enable yarn || true
+        if ! yarn --version; then
+          npm install -g yarn
+          yarn --version
+        fi
 
     - name: Scan
       id: scan
