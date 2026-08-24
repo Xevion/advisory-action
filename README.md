@@ -23,15 +23,29 @@ What may block depends on how much the ecosystem's scanner can actually prove:
 | --- | --- | --- | --- |
 | Go | `govulncheck` | `blocking` | anything introduced |
 | Rust | `cargo-audit` | `vulnerability-only` | introduced vulnerabilities with a fix |
-| JavaScript | `bun audit --prod` | `report-only` | nothing |
+| JavaScript | the project's own package manager | `report-only` | nothing |
 
 Go earns a gate because govulncheck resolves vulnerable *symbols* against a call
 graph and discards what your code cannot reach. Rust has no reachability
 analysis, but cargo-audit does separate real vulnerabilities from `unsound`,
 `unmaintained` and `yanked`, so the vulnerability class alone is worth gating.
-JavaScript has neither: `bun audit --prod` filters to the production dependency
-graph, which is a large improvement over nothing and still not a claim about
-reachability. So it reports.
+JavaScript has neither: a production-only audit filters to the shipping
+dependency graph, which is a large improvement over nothing and still not a
+claim about reachability. So it reports.
+
+The JavaScript scanner runs whichever manager the lockfile names:
+
+| Lockfile | Command |
+| --- | --- |
+| `bun.lock`, `bun.lockb` | `bun audit --prod` |
+| `pnpm-lock.yaml` | `pnpm audit --prod` |
+| `yarn.lock` | `yarn npm audit --environment production` |
+| `package-lock.json` | `npm audit --omit=dev --package-lock-only` |
+
+Where several lockfiles sit together, the first row that matches wins, since a
+stale `package-lock.json` beside a live `bun.lock` is common. Their output is
+normalized by shape rather than by which binary produced it, so a manager
+changing envelope between versions cannot quietly report a clean tree.
 
 ## Usage
 
@@ -46,15 +60,15 @@ reachability. So it reports.
 `@master`, so a change here reaches your repositories when you move the tag
 instead of the moment it is pushed.
 
-Ecosystems are detected by looking for `bun.lock`, `Cargo.lock` and `go.mod` up
+Ecosystems are detected by looking for a lockfile, `Cargo.lock` or `go.mod` up
 to two directories deep, so a repository with a frontend under `web/` beside a
 root `go.mod` is scanned as both. Results are merged per ecosystem.
 
-The action installs `govulncheck` and `cargo-audit` when it finds an ecosystem
-that needs them, but the language toolchain itself is yours to set up: run
-`actions/setup-go` before this action in a Go repository, and make sure a Rust
-toolchain is on PATH in a Cargo one. A Go module with no Go toolchain is an
-error rather than a silent skip.
+The action installs `govulncheck`, `cargo-audit`, pnpm and Yarn when it finds
+an ecosystem that needs them, but the language toolchain itself is yours to set
+up: run `actions/setup-go` before this action in a Go repository, and make sure
+a Rust toolchain is on PATH in a Cargo one. A Go module with no Go toolchain is
+an error rather than a silent skip.
 
 Without full history there is no baseline, and the action reports everything as
 pre-existing and blocks nothing. That is deliberate: an unknown baseline is a

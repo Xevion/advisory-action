@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, appendFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { scanGo } from "./go.ts";
-import { scanJs } from "./js.ts";
+import { scanJs, JS_LOCKFILES } from "./js.ts";
 import { scanRust } from "./rust.ts";
 import { compare, type Verdict } from "./diff.ts";
 import { discover } from "./discover.ts";
@@ -20,7 +20,7 @@ const SCANNERS: {
   markers: string[];
   scan: (dir: string) => Promise<ScanResult | null>;
 }[] = [
-  { ecosystem: "js", markers: ["bun.lock", "bun.lockb"], scan: scanJs },
+  { ecosystem: "js", markers: JS_LOCKFILES, scan: scanJs },
   { ecosystem: "rust", markers: ["Cargo.lock"], scan: scanRust },
   { ecosystem: "go", markers: ["go.mod"], scan: scanGo },
 ];
