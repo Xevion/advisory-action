@@ -1,6 +1,6 @@
-import { mkdtempSync, rmSync, appendFileSync } from "node:fs";
+import { mkdtempSync, rmSync, appendFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { scanGo } from "./go.ts";
 import { scanJs, JS_LOCKFILES } from "./js.ts";
 import { scanRust } from "./rust.ts";
@@ -34,6 +34,34 @@ async function git(args: string[], cwd = "."): Promise<string> {
     throw new Error(`git ${args.join(" ")} failed: ${await new Response(p.stderr).text()}`);
   }
   return out.trim();
+}
+
+/**
+ * Manifests whose ecosystem has no lockfile, and so was never scanned.
+ *
+ * A crate that gitignores Cargo.lock is normal for a library and fatal for a
+ * report, since nothing here would say the tree went unaudited.
+ */
+function unlockedManifests(dir: string): string[] {
+  const pairs: [string, string[]][] = [
+    ["Cargo.toml", ["Cargo.lock"]],
+    ["package.json", JS_LOCKFILES],
+  ];
+
+  // A workspace member carries no lockfile of its own, so the search walks up
+  // to the scan root before calling a manifest unlocked.
+  const covered = (root: string, lockfiles: string[]): boolean => {
+    for (let at = root; ; at = join(at, "..")) {
+      if (lockfiles.some((f) => existsSync(join(at, f)))) return true;
+      if (resolve(at) === resolve(dir)) return false;
+    }
+  };
+
+  return pairs.flatMap(([manifest, lockfiles]) =>
+    discover(dir, [manifest])
+      .filter((root) => !covered(root, lockfiles))
+      .map((root) => `${root}/${manifest}`),
+  );
 }
 
 async function scanTree(dir: string): Promise<ScanResult[]> {
@@ -201,6 +229,12 @@ async function main() {
 
   if (process.env.GITHUB_STEP_SUMMARY) {
     appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${summary}\n`);
+  }
+
+  for (const manifest of unlockedManifests(".")) {
+    console.log(
+      `::warning::${manifest} has no lockfile, so its dependencies were not scanned. Commit one, or generate it before this action.`,
+    );
   }
 
   const blocking = verdicts.flatMap((v) => v.blocking);
