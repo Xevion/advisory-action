@@ -39,13 +39,20 @@ The JavaScript scanner runs whichever manager the lockfile names:
 | --- | --- |
 | `bun.lock`, `bun.lockb` | `bun audit --prod` |
 | `pnpm-lock.yaml` | `pnpm audit --prod` |
-| `yarn.lock` | `yarn npm audit --environment production` |
+| `yarn.lock` (Berry) | `yarn npm audit --environment production` |
+| `yarn.lock` (classic) | `yarn audit --groups dependencies` |
 | `package-lock.json` | `npm audit --omit=dev --package-lock-only` |
 
 Where several lockfiles sit together, the first row that matches wins, since a
-stale `package-lock.json` beside a live `bun.lock` is common. Their output is
-normalized by shape rather than by which binary produced it, so a manager
-changing envelope between versions cannot quietly report a clean tree.
+stale `package-lock.json` beside a live `bun.lock` is common. Yarn alone is
+picked by lockfile contents rather than name: the `yarn lockfile v1` banner
+chooses classic's command over Berry's.
+
+Output is normalized by shape, not by which binary produced it, so a manager
+changing envelope between versions cannot quietly report a clean tree. Four
+shapes are in play: npm 6's `advisories` envelope (pnpm, Yarn classic), npm 7+'s
+`vulnerabilities` map, bun's package-keyed map, and Berry's flattened stream.
+Anything else raises an error rather than parsing to nothing.
 
 ## Usage
 
@@ -117,6 +124,8 @@ cannot quietly rot.
 - `bun audit --prod` does not apply the production filter at a workspace root,
   so the scanner audits each workspace package separately instead. Fixed in Bun
   1.4; the workaround is harmless once that lands.
+- Yarn Berry names no patched range, so fix availability is unknown there.
+  JavaScript is report-only, so nothing gates on it either way.
 - Production reachability is a dependency-graph property, not a runtime one.
   Build tooling reached through a peer dependency (`vite`, `rollup`, `esbuild`)
   still surfaces on framework projects even though it never ships.

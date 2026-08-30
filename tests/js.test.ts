@@ -49,6 +49,34 @@ const NPM_V2 = JSON.stringify({
   },
 });
 
+// Captured from `yarn npm audit --environment production --json` on Yarn 4.18.
+const YARN_BERRY = [
+  JSON.stringify({
+    value: "lodash",
+    children: {
+      ID: 1106913,
+      Issue: "Command Injection in lodash",
+      URL: "https://github.com/advisories/GHSA-35jh-r3h4-6jhm",
+      Severity: "high",
+      "Vulnerable Versions": "<4.17.21",
+      "Tree Versions": ["4.17.15"],
+      Dependents: ["yarn-e2e@workspace:."],
+    },
+  }),
+  JSON.stringify({
+    value: "minimist",
+    children: {
+      ID: 1097678,
+      Issue: "Prototype Pollution in minimist",
+      URL: "https://github.com/advisories/GHSA-xvch-5gv4-984h",
+      Severity: "critical",
+      "Vulnerable Versions": ">=1.0.0 <1.2.6",
+      "Tree Versions": ["1.2.0"],
+      Dependents: ["yarn-e2e@workspace:."],
+    },
+  }),
+].join("\n");
+
 const YARN_CLASSIC = [
   JSON.stringify({ type: "auditSummary", data: { vulnerabilities: {} } }),
   JSON.stringify({
@@ -98,6 +126,24 @@ describe("parseAudit", () => {
       },
     });
     expect(parseAudit(raw)).toHaveLength(0);
+  });
+
+  test("reads Yarn Berry's flattened per-package stream", () => {
+    const found = parseAudit(YARN_BERRY);
+    expect(found.map((a) => a.id)).toEqual([
+      "GHSA-35JH-R3H4-6JHM",
+      "GHSA-XVCH-5GV4-984H",
+    ]);
+    expect(found.map((a) => a.package)).toEqual(["lodash", "minimist"]);
+    expect(found.map((a) => a.severity)).toEqual(["high", "critical"]);
+    expect(found.every((a) => a.fixAvailable === null)).toBe(true);
+  });
+
+  test("reads a lone Berry record, which parses as one document", () => {
+    const [line] = YARN_BERRY.split("\n");
+    const found = parseAudit(line);
+    expect(found).toHaveLength(1);
+    expect(found[0].package).toBe("lodash");
   });
 
   test("reads Yarn classic's line-delimited stream", () => {

@@ -20,12 +20,28 @@ const MANAGERS: { pm: PackageManager; lockfiles: string[] }[] = [
 export const JS_LOCKFILES = MANAGERS.flatMap((m) => m.lockfiles);
 
 /** Each manager's production-only audit, emitting JSON on stdout. */
-const AUDIT_ARGV: Record<PackageManager, string[]> = {
+const AUDIT_ARGV: Record<Exclude<PackageManager, "yarn">, string[]> = {
   bun: ["bun", "audit", "--prod", "--json"],
   pnpm: ["pnpm", "audit", "--prod", "--json"],
-  yarn: ["yarn", "npm", "audit", "--environment", "production", "--json"],
   npm: ["npm", "audit", "--omit=dev", "--package-lock-only", "--json"],
 };
+
+/** Yarn renamed the audit between classic and Berry; only classic banners the lockfile. */
+function yarnArgv(dir: string): string[] {
+  let head = "";
+  try {
+    head = readFileSync(join(dir, "yarn.lock"), "utf8").slice(0, 400);
+  } catch {
+    // Unreadable; assume the modern line.
+  }
+  return head.includes("yarn lockfile v1")
+    ? ["yarn", "audit", "--groups", "dependencies", "--json"]
+    : ["yarn", "npm", "audit", "--environment", "production", "--json"];
+}
+
+function auditArgv(pm: PackageManager, dir: string): string[] {
+  return pm === "yarn" ? yarnArgv(dir) : AUDIT_ARGV[pm];
+}
 
 const GHSA = /GHSA-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}/i;
 
@@ -113,9 +129,14 @@ function parseBunMap(map: Record<string, any>): Advisory[] {
   return out;
 }
 
-/** Yarn classic streams one JSON object per line rather than one document. */
+/**
+ * Both Yarn lines stream one object per line: classic wraps the npm v6
+ * advisory, Berry emits a flattened record naming no patched range.
+ */
 function parseNdjson(raw: string): Advisory[] {
-  const found: Record<string, any> = {};
+  const classic: Record<string, any> = {};
+  const berry: Advisory[] = [];
+
   for (const line of raw.split("\n")) {
     const t = line.trim();
     if (!t.startsWith("{")) continue;
@@ -125,10 +146,28 @@ function parseNdjson(raw: string): Advisory[] {
     } catch {
       continue;
     }
-    const a = obj?.type === "auditAdvisory" ? obj.data?.advisory : undefined;
-    if (a) found[String(a.id)] = a;
+
+    if (obj?.type === "auditAdvisory" && obj.data?.advisory) {
+      const a = obj.data.advisory;
+      classic[String(a.id)] = a;
+      continue;
+    }
+
+    const c = obj?.children;
+    if (typeof obj?.value === "string" && c && c.ID !== undefined) {
+      berry.push({
+        ecosystem: "js",
+        id: advisoryId(c.URL, undefined, c.ID),
+        package: obj.value,
+        severity: normalizeSeverity(c.Severity),
+        klass: "vulnerability",
+        title: c.Issue ?? "",
+        fixAvailable: null,
+      });
+    }
   }
-  return parseAdvisoryMap(found);
+
+  return [...parseAdvisoryMap(classic), ...berry];
 }
 
 /**
@@ -163,6 +202,10 @@ export function parseAudit(raw: string): Advisory[] {
   }
   if (root.vulnerabilities && typeof root.vulnerabilities === "object") {
     return parseNpmVulnerabilities(root.vulnerabilities);
+  }
+  // A lone Berry record parses as one document, and bun's branch would read it as empty.
+  if (typeof root.value === "string" && root.children?.ID !== undefined) {
+    return parseNdjson(t);
   }
   return parseBunMap(root);
 }
@@ -207,7 +250,7 @@ function auditRoots(dir: string): string[] {
 async function auditOne(cwd: string, pm: PackageManager): Promise<Advisory[]> {
   let proc;
   try {
-    proc = Bun.spawn(AUDIT_ARGV[pm], { cwd, stdout: "pipe", stderr: "pipe" });
+    proc = Bun.spawn(auditArgv(pm, cwd), { cwd, stdout: "pipe", stderr: "pipe" });
   } catch {
     throw new Error(`${pm} is not installed, but its lockfile is present`);
   }
