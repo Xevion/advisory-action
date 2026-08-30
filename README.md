@@ -77,6 +77,10 @@ up: run `actions/setup-go` before this action in a Go repository, and make sure
 a Rust toolchain is on PATH in a Cargo one. A Go module with no Go toolchain is
 an error rather than a silent skip.
 
+A manifest with no lockfile anywhere above it is reported as unscanned rather
+than passed over, since a repository that gitignores `Cargo.lock` would
+otherwise read as clean.
+
 Without full history there is no baseline, and the action reports everything as
 pre-existing and blocks nothing. That is deliberate: an unknown baseline is a
 reason to under-report, never to fail a change that cannot be attributed.
