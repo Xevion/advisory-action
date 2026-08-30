@@ -15,6 +15,8 @@ import {
   type ScanResult,
 } from "./types.ts";
 
+const ANNOTATION_LIMIT = 10;
+
 const SCANNERS: {
   ecosystem: Ecosystem;
   markers: string[];
@@ -205,10 +207,14 @@ async function main() {
   for (const a of blocking) {
     console.log(`::error title=${a.id}::${a.package}: ${a.title}`);
   }
-  for (const v of verdicts) {
-    for (const a of v.inherited) {
-      console.log(`::warning title=${a.id}::${a.package}: ${a.title} (pre-existing)`);
-    }
+  // GitHub shows ten annotations per step, and the summary already lists them all.
+  const inherited = verdicts.flatMap((v) => v.inherited);
+  for (const a of inherited.slice(0, ANNOTATION_LIMIT)) {
+    console.log(`::warning title=${a.id}::${a.package}: ${a.title} (pre-existing)`);
+  }
+  const hidden = inherited.length - ANNOTATION_LIMIT;
+  if (hidden > 0) {
+    console.log(`::notice::${hidden} more pre-existing advisories; see the job summary`);
   }
 
   if (process.env.GITHUB_OUTPUT) {
