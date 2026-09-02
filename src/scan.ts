@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { mkdtempSync, rmSync, appendFileSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, appendFileSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { scanGo } from "./go.ts";
@@ -169,8 +169,24 @@ function block(markdown: boolean, title: string, items: string[]): string[] {
     : ["", `${title}:`, ...items];
 }
 
+/**
+ * The scanner's own version, named in the report.
+ *
+ * A local runner resolves this through a package cache that does not revalidate
+ * a moved tag, so which scanner produced a report has to be visible in it.
+ */
+function version(): string {
+  try {
+    return JSON.parse(
+      readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+    ).version;
+  } catch {
+    return "unknown";
+  }
+}
+
 function summarize(verdicts: Verdict[], ignores: IgnoreSet, markdown: boolean): string {
-  const lines: string[] = ["## Dependency advisories", ""];
+  const lines: string[] = [`## Dependency advisories (v${version()})`, ""];
 
   for (const v of verdicts) {
     const tier = TIERS[v.ecosystem];
