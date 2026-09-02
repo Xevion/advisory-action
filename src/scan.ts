@@ -161,7 +161,15 @@ function renderIgnore(e: { id: string; reason?: string }): string {
   return e.reason ? `\`${e.id}\` — ${e.reason}` : `\`${e.id}\``;
 }
 
-function summarize(verdicts: Verdict[], ignores: IgnoreSet): string {
+/** Collapsed on GitHub, plain lines locally, since a terminal cannot fold them. */
+function block(markdown: boolean, title: string, items: string[]): string[] {
+  if (items.length === 0) return [];
+  return markdown
+    ? ["", `<details><summary>${title}</summary>`, "", ...items, "", "</details>"]
+    : ["", `${title}:`, ...items];
+}
+
+function summarize(verdicts: Verdict[], ignores: IgnoreSet, markdown: boolean): string {
   const lines: string[] = ["## Dependency advisories", ""];
 
   for (const v of verdicts) {
@@ -189,27 +197,25 @@ function summarize(verdicts: Verdict[], ignores: IgnoreSet): string {
         ...v.introduced.map(renderRow),
       );
     }
-    if (v.suppressed.length > 0) {
-      lines.push(
-        "",
-        "<details><summary>Suppressed by the ignore file</summary>",
-        "",
-        ...v.suppressed.map(
+    lines.push(
+      ...block(
+        markdown,
+        "Suppressed by the ignore file",
+        v.suppressed.map(
           (a) =>
             `- ${renderIgnore(ignores.active.get(a.id.toUpperCase()) ?? a)} ${a.package}`,
         ),
-        "",
-        "</details>",
-      );
-    }
-    if (v.resolved.length > 0) {
+      ),
+    );
+    // Resolved advisories are the ones no longer present, so the count above
+    // carries the news; listing every one drowns a terminal in good news.
+    if (markdown) {
       lines.push(
-        "",
-        "<details><summary>Resolved</summary>",
-        "",
-        ...v.resolved.map((a) => `- \`${a.id}\` ${a.package}: ${a.title.slice(0, 90)}`),
-        "",
-        "</details>",
+        ...block(
+          markdown,
+          "Resolved",
+          v.resolved.map((a) => `- \`${a.id}\` ${a.package}: ${a.title.slice(0, 90)}`),
+        ),
       );
     }
     lines.push("");
@@ -308,7 +314,7 @@ async function main() {
   const base = baseSha ? await scanBase(baseSha) : null;
 
   const verdicts = compare(head, base, ignores);
-  const summary = summarize(verdicts, ignores);
+  const summary = summarize(verdicts, ignores, o.annotate);
   console.log(summary);
 
   if (process.env.GITHUB_STEP_SUMMARY) {
