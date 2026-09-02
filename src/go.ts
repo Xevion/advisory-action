@@ -69,19 +69,51 @@ export function* parseStream<T>(raw: string): Generator<T> {
   }
 }
 
-export async function scanGo(dir: string): Promise<ScanResult | null> {
-  if (!existsSync(join(dir, "go.mod"))) return null;
+const GOVULNCHECK = "golang.org/x/vuln/cmd/govulncheck";
 
-  const proc = Bun.spawn(["govulncheck", "-format", "json", "./..."], {
-    cwd: dir,
-    stdout: "pipe",
-    stderr: "pipe",
-  });
+/**
+ * A scanner too old for the toolchain in use.
+ *
+ * govulncheck reads export data with a bundled x/tools, so one built against an
+ * older Go cannot load what a newer compiler wrote, and says so in these terms.
+ */
+const SKEW = /internal error: package .* without types/;
+
+interface Run {
+  raw: string;
+  err: string;
+  code: number;
+}
+
+async function run(argv: string[], dir: string): Promise<Run> {
+  let proc;
+  try {
+    proc = Bun.spawn(argv, { cwd: dir, stdout: "pipe", stderr: "pipe" });
+  } catch {
+    return { raw: "", err: `${argv[0]} is not installed`, code: 127 };
+  }
   const [raw, err, code] = await Promise.all([
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),
     proc.exited,
   ]);
+  return { raw, err, code };
+}
+
+export async function scanGo(dir: string): Promise<ScanResult | null> {
+  if (!existsSync(join(dir, "go.mod"))) return null;
+
+  const args = ["-format", "json", "./..."];
+  let result = await run(["govulncheck", ...args], dir);
+
+  // Building govulncheck through the active toolchain guarantees the pair match,
+  // so a missing or stale binary costs a compile rather than the whole scan.
+  if (result.code !== 0 && (result.code === 127 || SKEW.test(result.err))) {
+    const version = process.env.ADVISORY_GOVULNCHECK_VERSION || "latest";
+    result = await run(["go", "run", `${GOVULNCHECK}@${version}`, ...args], dir);
+  }
+
+  const { raw, err, code } = result;
 
   // JSON mode reports findings in the stream, never through the exit code, so a
   // non-zero status here means govulncheck itself could not run.
