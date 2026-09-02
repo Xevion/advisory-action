@@ -2,6 +2,9 @@
   "name": "advisory-action",
   "private": true,
   "type": "module",
+  "bin": {
+    "advisory-scan": "./src/scan.ts"
+  },
   "scripts": {
     "typecheck": "tsc --noEmit"
   },

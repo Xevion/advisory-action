@@ -11,7 +11,7 @@ function adv(
   return { ecosystem, id, package: "pkg", severity: "high", klass, title: id, fixAvailable };
 }
 
-const noIgnores = { active: new Map(), expired: [] };
+const noIgnores = { active: new Map(), expired: [], used: new Set<string>(), path: null };
 const result = (ecosystem: Ecosystem, advisories: Advisory[]): ScanResult => ({
   ecosystem,
   advisories,
@@ -73,6 +73,8 @@ describe("compare", () => {
     const ignores = {
       active: new Map([["GO-2", { id: "GO-2", reason: "upstream fix pending" }]]),
       expired: [],
+      used: new Set<string>(),
+      path: null,
     };
     const [v] = compare(
       [result("go", [adv("go", "GO-1"), adv("go", "GO-2")])],

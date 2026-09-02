@@ -1,3 +1,4 @@
+#!/usr/bin/env bun
 import { mkdtempSync, rmSync, appendFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -6,7 +7,12 @@ import { scanJs, JS_LOCKFILES } from "./js.ts";
 import { scanRust } from "./rust.ts";
 import { compare, type Verdict } from "./diff.ts";
 import { discover } from "./discover.ts";
-import { loadIgnores, type IgnoreSet } from "./ignore.ts";
+import {
+  loadIgnores,
+  resolveIgnorePath,
+  unusedIgnores,
+  type IgnoreSet,
+} from "./ignore.ts";
 import {
   SEVERITY_ORDER,
   TIERS,
@@ -150,6 +156,11 @@ function byClass(list: Advisory[]): string {
     : "none";
 }
 
+/** `RUSTSEC-1 (transitive via x)`, keeping any stated justification attached. */
+function renderIgnore(e: { id: string; reason?: string }): string {
+  return e.reason ? `\`${e.id}\` — ${e.reason}` : `\`${e.id}\``;
+}
+
 function summarize(verdicts: Verdict[], ignores: IgnoreSet): string {
   const lines: string[] = ["## Dependency advisories", ""];
 
@@ -168,7 +179,6 @@ function summarize(verdicts: Verdict[], ignores: IgnoreSet): string {
         : []),
       `- pre-existing on the base branch: ${countWithSeverity(v.inherited)}`,
       `- by class: ${byClass([...v.introduced, ...v.inherited])}`,
-      `- suppressed by ignore file: ${v.suppressed.length}`,
       v.baselineKnown ? "" : "- baseline unavailable, so nothing is attributed to this change",
     );
     if (v.introduced.length > 0) {
@@ -177,6 +187,19 @@ function summarize(verdicts: Verdict[], ignores: IgnoreSet): string {
         "| Advisory | Package | Class | Severity | Fix | Title |",
         "| --- | --- | --- | --- | --- | --- |",
         ...v.introduced.map(renderRow),
+      );
+    }
+    if (v.suppressed.length > 0) {
+      lines.push(
+        "",
+        "<details><summary>Suppressed by the ignore file</summary>",
+        "",
+        ...v.suppressed.map(
+          (a) =>
+            `- ${renderIgnore(ignores.active.get(a.id.toUpperCase()) ?? a)} ${a.package}`,
+        ),
+        "",
+        "</details>",
       );
     }
     if (v.resolved.length > 0) {
@@ -196,18 +219,84 @@ function summarize(verdicts: Verdict[], ignores: IgnoreSet): string {
     lines.push(
       "### Expired ignores",
       "",
-      "These no longer suppress anything and should be removed or renewed.",
+      ...ignores.expired.map((e) => `- ${renderIgnore(e)}`),
       "",
-      ...ignores.expired.map((e) => `- \`${e.id}\` — ${e.reason}`),
+    );
+  }
+
+  // A failed scan reports no advisories, which would make live ignores look dead.
+  const unused = verdicts.some((v) => v.error) ? [] : unusedIgnores(ignores);
+  if (unused.length > 0) {
+    lines.push(
+      "### Unused ignores",
+      "",
+      ...unused.map((e) => `- ${renderIgnore(e)}`),
       "",
     );
   }
   return lines.join("\n");
 }
 
+interface Options {
+  baseRef: string;
+  ignoreFile: string;
+  useBase: boolean;
+  annotate: boolean;
+}
+
+const USAGE = `advisory-scan — report dependency advisories against a baseline
+
+  --base-ref <ref>      Baseline to diff against. Defaults to the merge base
+                        with the pull request target, or with the default
+                        branch when run locally.
+  --no-base             Skip the baseline. Reports the current tree and blocks
+                        nothing, at roughly half the runtime.
+  --ignore-file <path>  Ignore list. Defaults to .github/advisories.json5,
+                        then .github/advisories.json.
+  -h, --help            Show this message.`;
+
+function parseArgs(argv: string[]): Options {
+  const o: Options = {
+    baseRef: process.env.ADVISORY_BASE_REF ?? "",
+    ignoreFile: process.env.ADVISORY_IGNORE_FILE ?? "",
+    useBase: true,
+    annotate: Boolean(process.env.GITHUB_ACTIONS),
+  };
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === "--base-ref") o.baseRef = argv[++i] ?? "";
+    else if (arg === "--ignore-file") o.ignoreFile = argv[++i] ?? "";
+    else if (arg === "--no-base") o.useBase = false;
+    else if (arg === "-h" || arg === "--help") {
+      console.log(USAGE);
+      process.exit(0);
+    } else throw new Error(`unknown argument ${arg}`);
+  }
+  return o;
+}
+
+/**
+ * The commit to judge this tree against.
+ *
+ * A pull request has its target; locally the default branch stands in, which on
+ * the default branch itself resolves to HEAD and attributes nothing.
+ */
+async function resolveBase(o: Options): Promise<string> {
+  if (!o.useBase) return "";
+  if (o.baseRef) return o.baseRef;
+  if (process.env.GITHUB_BASE_REF) {
+    return git(["merge-base", "HEAD", `origin/${process.env.GITHUB_BASE_REF}`]).catch(
+      () => "",
+    );
+  }
+  const head = await git(["rev-parse", "--abbrev-ref", "origin/HEAD"]).catch(() => "");
+  if (!head) return "";
+  return git(["merge-base", "HEAD", head]).catch(() => "");
+}
+
 async function main() {
-  const ignorePath = process.env.ADVISORY_IGNORE_FILE ?? ".github/advisories.json";
-  const ignores = loadIgnores(ignorePath, new Date());
+  const o = parseArgs(Bun.argv.slice(2));
+  const ignores = loadIgnores(resolveIgnorePath(o.ignoreFile), new Date());
 
   const head = await scanTree(".");
   if (head.length === 0) {
@@ -215,12 +304,7 @@ async function main() {
     return;
   }
 
-  let baseSha = process.env.ADVISORY_BASE_REF ?? "";
-  if (!baseSha && process.env.GITHUB_BASE_REF) {
-    baseSha = await git(["merge-base", "HEAD", `origin/${process.env.GITHUB_BASE_REF}`]).catch(
-      () => "",
-    );
-  }
+  const baseSha = await resolveBase(o);
   const base = baseSha ? await scanBase(baseSha) : null;
 
   const verdicts = compare(head, base, ignores);
@@ -232,23 +316,32 @@ async function main() {
   }
 
   for (const manifest of unlockedManifests(".")) {
-    console.log(
-      `::warning::${manifest} has no lockfile, so its dependencies were not scanned. Commit one, or generate it before this action.`,
-    );
+    const text = `${manifest} has no lockfile; its dependencies were not scanned.`;
+    console.log(o.annotate ? `::warning::${text}` : `warning: ${text}`);
+  }
+
+  const failed = verdicts.filter((v) => v.error);
+  for (const v of failed) {
+    const text = `${v.ecosystem} could not be scanned: ${v.error}`;
+    console.log(o.annotate ? `::error title=Scanner failed::${text}` : `error: ${text}`);
   }
 
   const blocking = verdicts.flatMap((v) => v.blocking);
   for (const a of blocking) {
-    console.log(`::error title=${a.id}::${a.package}: ${a.title}`);
+    const text = `${a.package}: ${a.title}`;
+    console.log(o.annotate ? `::error title=${a.id}::${text}` : `error: ${a.id} ${text}`);
   }
+
   // GitHub shows ten annotations per step, and the summary already lists them all.
   const inherited = verdicts.flatMap((v) => v.inherited);
-  for (const a of inherited.slice(0, ANNOTATION_LIMIT)) {
-    console.log(`::warning title=${a.id}::${a.package}: ${a.title} (pre-existing)`);
-  }
-  const hidden = inherited.length - ANNOTATION_LIMIT;
-  if (hidden > 0) {
-    console.log(`::notice::${hidden} more pre-existing advisories; see the job summary`);
+  if (o.annotate) {
+    for (const a of inherited.slice(0, ANNOTATION_LIMIT)) {
+      console.log(`::warning title=${a.id}::${a.package}: ${a.title} (pre-existing)`);
+    }
+    const hidden = inherited.length - ANNOTATION_LIMIT;
+    if (hidden > 0) {
+      console.log(`::notice::${hidden} more pre-existing advisories; see the job summary`);
+    }
   }
 
   if (process.env.GITHUB_OUTPUT) {
@@ -260,11 +353,11 @@ async function main() {
       process.env.GITHUB_OUTPUT,
       `introduced=${verdicts.reduce((n, v) => n + v.introduced.length, 0)}\n` +
         `resolved=${verdicts.reduce((n, v) => n + v.resolved.length, 0)}\n` +
-        `total=${totals}\nblocking=${blocking.length}\n`,
+        `total=${totals}\nblocking=${blocking.length}\nfailed=${failed.length}\n`,
     );
   }
 
-  process.exit(blocking.length > 0 ? 1 : 0);
+  process.exit(blocking.length > 0 || failed.length > 0 ? 1 : 0);
 }
 
 try {
@@ -272,8 +365,11 @@ try {
 } catch (e) {
   // A malformed ignore file or an unusable repository is a configuration fault,
   // not an advisory. Say so plainly rather than dumping a stack trace into CI.
+  const text = e instanceof Error ? e.message : String(e);
   console.log(
-    `::error title=Advisory scan failed::${e instanceof Error ? e.message : String(e)}`,
+    process.env.GITHUB_ACTIONS
+      ? `::error title=Advisory scan failed::${text}`
+      : `error: ${text}`,
   );
   process.exit(1);
 }

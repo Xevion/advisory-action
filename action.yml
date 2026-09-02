@@ -11,9 +11,11 @@ inputs:
     required: false
     default: ""
   ignore-file:
-    description: Path to the advisory ignore list.
+    description: >-
+      Path to the advisory ignore list. Defaults to .github/advisories.json5,
+      then .github/advisories.json; having both is an error.
     required: false
-    default: .github/advisories.json
+    default: ""
   bun-version:
     description: Bun version used to run the scanner and to audit JavaScript projects.
     required: false
